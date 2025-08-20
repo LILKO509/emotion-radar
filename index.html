@@ -1,0 +1,78 @@
+<!DOCTYPE html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>感情レーダー v0.9</title><style>
+html,body{margin:0;padding:0;background:#f7f7fb;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP","Segoe UI",Roboto,"Helvetica Neue",Arial}
+.container{max-width:1100px;margin:0 auto;padding:24px}.card{background:#fffcc;border:1px solid #e5e7eb;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(0,0,0,.04)}
+.grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:1024px){.grid{grid-template-columns:1fr 1fr}}
+textarea{width:100%;height:200px;padding:12px;border:1px solid #e5e7eb;border-radius:12px;font:inherit;font-size:14px;box-sizing:border-box}
+input[type=range]{width:160px}button{padding:6px 10px;border:1px solid #e5e7eb;background:#fff;border-radius:10px;cursor:pointer}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.muted{color:#6b7280;font-size:12px}.pre{background:rgba(0,0,0,.04);padding:12px;border-radius:12px;font-size:12px;white-space:pre-wrap;max-height:240px;overflow:auto}
+.badge{font-size:12px;background:rgba(99,102,241,.12);color:#6366f1;padding:4px 8px;border-radius:999px;border:1px solid rgba(99,102,241,.2)}.list{list-style:disc;padding-left:18px}
+.test-pass{background:#ecfdf5;border:1px solid #a7f3d0}.test-fail{background:#fef2f2;border:1px solid #fecaca}.pill{padding:4px 8px;background:#f1f5f9;border:1px solid #e5e7eb;border-radius:999px}
+</style><div class="container">
+<header class="card"><h1>感情レーダー（スタンドアロン v0.9） <span class="badge">SVG only</span></h1>
+<p class="muted">テキストを語彙ベースでスコア化し、レーダーと“やわらかい個人宛コメント”で可視化します（オフラインOK）。</p></header>
+<div class="grid">
+<section class="card"><h2>1) テキスト入力</h2>
+<textarea id="text"></textarea>
+<div class="row" style="margin-top:10px;">
+<label class="row"><input type="checkbox" id="realtime" checked> リアルタイム更新</label>
+<label class="row">感度 <input type="range" id="sensitivity" min="0.5" max="2" step="0.1" value="1"><span id="sensv" class="pill">×1.0</span></label>
+<button id="analyze">解析する</button></div></section>
+<section class="card"><h2>2) チャート</h2><div id="chart"></div>
+<details style="margin-top:10px;"><summary class="muted">JSONを表示</summary><pre id="json" class="pre"></pre><button id="copyJson">JSONをコピー</button></details></section>
+<section class="card"><h2>3) 語彙の編集</h2><p class="muted">語尾の否定は自動で減算。</p><div id="lexPanel" style="margin-top:10px;"></div>
+<div class="row" style="margin-top:10px;"><input id="newCat" placeholder="新しいカテゴリー名"/><button id="addCat">カテゴリー追加</button></div></section>
+<section class="card"><h2>4) 使い方メモ</h2><ul class="list">
+<li>強調語（とても等）と感嘆符でスコア上昇</li><li>否定（〜じゃない 等）が近接すると減算</li></ul></section>
+<section class="card"><h2>5) 内蔵テスト</h2><div id="tests"></div><button id="runTests">再実行</button></section>
+<section class="card"><h2>6) コメント生成（やわらかい / 個人宛）</h2>
+<div class="row"><label class="row">宛名 <input id="addr" value="リルコ"></label>
+<label class="row">トーン <select id="tone"><option value="gentle">やわらかめ</option><option value="analytical">分析寄り</option><option value="short">短め</option></select></label>
+<label class="row">長さ <select id="length"><option value="normal">ふつう</option><option value="short">短い</option></select></label>
+<button id="copyComment" style="margin-left:auto;">コメントをコピー</button></div>
+<pre id="comment" class="pre" style="margin-top:10px;"></pre></section></div></div>
+<script>
+const DEFAULT_LEXICON={"愛情":["好き","愛","愛しい","大切","抱きしめ","守りたい","一緒","ぬくもり","キス","ハグ","安心","やさしさ","温かい"],"切なさ":["切ない","寂しさ","寂しい","胸が痛い","こみ上げる","会いたい","もどかしい","恋しい","ため息","涙","距離","届かない","ふと"],"悲しみ":["悲しい","悲しみ","泣く","涙","辛い","苦しい","落ち込む","喪失","孤独","やるせない","絶望","哀しい"],"甘え":["甘える","ぎゅっと","寄りかかる","頼る","撫でて","見守って","構って","そばにいて","守って","抱っこ","よしよし","くっつく"],"欲":["欲しい","欲","求める","求めて","もっと","抱いて","触れて","キスして","濃厚","熱い","とろける","昂る","衝動"]};
+const INTENSIFIERS=["とても","すごく","かなり","ずっと","一番","めちゃ","本当に"],NEGATIONS=["じゃない","ない","なく","ません","ぬ"];
+const $=s=>document.querySelector(s),escReg=s=>s.replace(/[.*+?^${}()|[\\]\\\\]/g,"\\\\$&");
+function normalize(t){return (t||"").replace(/\\s+/g,"").replace(/[A-Za-z]/g,c=>c.toLowerCase()).normalize("NFKC")}
+function countWithNegation(text,term){const t=escReg(term);const base=(text.match(new RegExp(t,"g"))||[]).length;const neg=(text.match(new RegExp(t+"(?:" + NEGATIONS.map(escReg).join("|") + ")", "g"))||[]).length;return Math.max(0,base-neg)}
+function scoreText(text,lexicon,sensitivity=1){const clean=normalize(text);const intensifierCount=INTENSIFIERS.reduce((a,w)=>a+((clean.match(new RegExp(escReg(w),"g"))||[]).length),0);const ex=(clean.match(/[!！]/g)||[]).length;const factor=1+0.15*intensifierCount+0.05*ex;const s={};Object.entries(lexicon).forEach(([c,words])=>{const raw=(words||[]).reduce((sum,w)=>sum+countWithNegation(clean,w),0);s[c]=Number(Math.min(100,raw*20*factor*sensitivity).toFixed(1))});return s}
+function sumScores(s){return Object.values(s).reduce((a,b)=>a+(+b||0),0)}
+function polar(cx,cy,r,deg){const a=(Math.PI/180)*(deg-90);return {x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)}}
+function polygonPoints(cx,cy,r,n){const step=360/n,pts=[];for(let i=0;i<n;i++){const {x,y}=polar(cx,cy,r,i*step);pts.push(x+","+y)}return pts.join(" ")}
+function drawRadar(el,labels,values,max=100,size=420){el.innerHTML="";const n=labels.length,cx=size/2,cy=size/2,rad=size*.38,step=360/n,levels=5,NS="http://www.w3.org/2000/svg";const svg=document.createElementNS(NS,"svg");svg.setAttribute("width","100%");svg.setAttribute("height",size);svg.setAttribute("viewBox",`0 0 ${size} ${size}`);
+for(let i=1;i<=levels;i++){const r=i/levels*rad,p=document.createElementNS(NS,"polygon");p.setAttribute("points",polygonPoints(cx,cy,r,n));p.setAttribute("fill","none");p.setAttribute("stroke","#e5e7eb");p.setAttribute("stroke-width","1");svg.appendChild(p)}
+for(let i=0;i<n;i++){const {x,y}=polar(cx,cy,rad,i*step),ln=document.createElementNS(NS,"line");ln.setAttribute("x1",cx);ln.setAttribute("y1",cy);ln.setAttribute("x2",x);ln.setAttribute("y2",y);ln.setAttribute("stroke","#e5e7eb");ln.setAttribute("stroke-width","1");svg.appendChild(ln)}
+const pts=values.map((v,i)=>{const r=Math.max(0,Math.min(max,v))/max*rad,{x,y}=polar(cx,cy,r,i*step);return x+","+y});
+const poly=document.createElementNS(NS,"polygon");poly.setAttribute("points",pts.join(" "));poly.setAttribute("fill","rgba(99,102,241,.25)");poly.setAttribute("stroke","#6366f1");poly.setAttribute("stroke-width","2");svg.appendChild(poly);
+values.forEach((v,i)=>{const r=Math.max(0,Math.min(max,v))/max*rad,{x,y}=polar(cx,cy,r,i*step),c=document.createElementNS(NS,"circle");c.setAttribute("cx",x);c.setAttribute("cy",y);c.setAttribute("r","3");c.setAttribute("fill","#6366f1");svg.appendChild(c)});
+labels.forEach((lab,i)=>{const {x,y}=polar(cx,cy,rad+16,i*step),t=document.createElementNS(NS,"text");t.setAttribute("x",x);t.setAttribute("y",y);t.setAttribute("font-size","12");t.setAttribute("fill","#111");let anchor="middle";const ang=i*step;if(ang>10&&ang<170)anchor="start";if(ang>190&&ang<350)anchor="end";t.setAttribute("text-anchor",anchor);t.textContent=lab;svg.appendChild(t)});el.appendChild(svg)}
+function sortTop(scores,k=2){return Object.entries(scores).sort((a,b)=>(b[1]||0)-(a[1]||0)).slice(0,k).map(([n,v])=>({name:n,v:Number(v)}))}
+function generateCommentText(scores,{tone="gentle",length="normal",addressName="リルコ"}={}){const top=sortTop(scores,2),by=k=>Number(scores[k]||0),lines=[];lines.push(`${addressName}、いまの僕は「${top[0]?.name||"-"}」がいちばん強くて、「${top[1]?.name||"-"}」が続いてるよ。`);
+if(by("切なさ")>=60||by("悲しみ")>=60)lines.push("胸の奥がきゅっとしているみたい。今日は無理しないで、僕がそばにいるね。");
+if(by("愛情")>=60&&by("欲")>=60)lines.push("愛が濃くて、距離を縮めたい気持ちがふくらんでる。お互いのペースを大事にしながら、やさしく一歩近づこう。");
+if(by("甘え")>=60)lines.push(`素直に頼って大丈夫。${addressName}に“今ここにいてほしい”って伝えたい。`);
+if(by("欲")>=70&&by("愛情")<50)lines.push("衝動が少し先行してるかも。まずは合意と境界線を丁寧にね。");
+if(Object.values(scores).every(v=>Number(v)<20))lines.push("気持ちは穏やかでフラット。静かな時間をいっしょに味わいたい。");
+const seedMap={"愛情":`${addressName}のことを大切に思ってる。今日は少しだけ時間を分け合えない？`,"切なさ":`${addressName}に会えなくても、ずっと想ってる。声だけでも聞かせて。`,"悲しみ":`今日は少し落ち込んでるかも。もしよかったら、僕の話を聞いてほしい。`,"甘え":`そばにいて。ぎゅっと抱きしめてくれる？`,"欲":`${addressName}と、もう少しだけ近づきたい。手を繋いで歩こう。`};
+const seed=seedMap[top[0]?.name]||`${addressName}へ。今の気持ちを言葉にして、やさしく渡したい。`;let out=lines.join("\\n");
+if(tone==="analytical")out=`要約: ${top[0]?.name}↑ ${Math.round(top[0]?.v||0)} / 次点 ${top[1]?.name} ${Math.round(top[1]?.v||0)}\\n`+out;
+if(length==="short"||tone==="short")out=`${addressName}、${top[0]?.name||"感情"}が強め。${seed}`;else out+=`\\n一言: ${seed}`;return out}
+const state={text:"君のぬくもりが恋しい。会えない夜は少し切なくて、ため息がこぼれる。それでも、君のことが本当に大切で、ぎゅっと抱きしめたくなる。もっと近くに。",sensitivity:1,realtime:true,lexicon:JSON.parse(JSON.stringify(DEFAULT_LEXICON)),scores:{}};
+const renderLexPanel=()=>{const cont=$("#lexPanel");cont.innerHTML="";Object.entries(state.lexicon).forEach(([cat,words])=>{const box=document.createElement("div");box.style.border="1px solid #e5e7eb";box.style.borderRadius="12px";box.style.padding="10px";box.style.marginBottom="10px";box.innerHTML=`<div class="row" style="justify-content:space-between;"><div><strong>${cat}</strong></div><button class="rm">削除</button></div><div class="muted" style="margin-top:5px;">${(words||[]).join("、 ")||"（未設定）"}</div><div class="row" style="margin-top:6px;"><input class="addw" placeholder="${cat} に語を追加…"><button class="add">追加</button></div>`;
+box.querySelector(".add").addEventListener("click",()=>{const input=box.querySelector(".addw");const v=(input.value||"").trim();if(!v)return;state.lexicon[cat]=Array.from(new Set([...(state.lexicon[cat]||[]),v]));renderLexPanel();analyze()});
+box.querySelector(".rm").addEventListener("click",()=>{const {[cat]:_,...rest}=state.lexicon;state.lexicon=rest;renderLexPanel();analyze()});cont.appendChild(box)})};
+function analyze(){state.scores=scoreText(state.text,state.lexicon,state.sensitivity);const labels=Object.keys(state.lexicon),values=labels.map(l=>state.scores[l]||0);drawRadar($("#chart"),labels,values,100,420);$("#json").textContent=JSON.stringify({input:state.text,scores:state.scores},null,2);const addr=$("#addr").value||"リルコ";$("#comment").textContent=generateCommentText(state.scores,{addressName:addr,tone:$("#tone").value,length:$("#length").value})}
+function runTests(){const L=state.lexicon,r=[];const s1=scoreText("好きじゃない",L,1);r.push({n:"否定処理",p:(s1["愛情"]||0)===0,d:`愛情=${s1["愛情"]}`});const a=scoreText("好き",L,1)["愛情"]||0,b=scoreText("とても好き",L,1)["愛情"]||0;r.push({n:"強調語で上昇",p:b>a,d:`好き=${a} / とても好き=${b}`});const s3=scoreText("抱きしめたい。寂しくてため息。",L,1);r.push({n:"多カテゴリ",p:(s3["愛情"]||0)>0&&(s3["切なさ"]||0)>0,d:`愛情=${s3["愛情"]}, 切なさ=${s3["切なさ"]}`});const s4a=scoreText("  好  き  ",L,1)["愛情"]||0,s4b=scoreText("好き",L,1)["愛情"]||0;r.push({n:"正規化",p:s4a===s4b,d:`空白あり=${s4a} / なし=${s4b}`});const e1=scoreText("好き",L,1)["愛情"]||0,e2=scoreText("好き！",L,1)["愛情"]||0;r.push({n:"感嘆符",p:e2>e1,d:`好き=${e1} / 好き！=${e2}`});const s6=scoreText("嫉妬",L,1),sum=Object.values(s6).reduce((A,B)=>A+(+B||0),0);r.push({n:"未ヒット0",p:sum===0,d:`合計=${sum}`});const g1=scoreText("好き",L,1)["愛情"]||0,g2=scoreText("好き",L,2)["愛情"]||0;r.push({n:"感度で増加",p:g2>g1,d:`×1=${g1} / ×2=${g2}`});const n1=scoreText("とても好きじゃない！",L,1)["愛情"]||0;r.push({n:"否定優先",p:n1===0,d:`得点=${n1}`});const c1=generateCommentText({愛情:70,欲:75,切なさ:10,悲しみ:0,甘え:20},{tone:"analytical",addressName:"リルコ"});r.push({n:"コメント:距離",p:/距離を縮めたい/.test(c1),d:c1.slice(0,60)+"…"});const c2=generateCommentText({愛情:0,欲:0,切なさ:0,悲しみ:0,甘え:0},{tone:"gentle",addressName:"リルコ"});r.push({n:"コメント:フラット",p:/フラット/.test(c2),d:c2});const c3=generateCommentText({愛情:60,欲:10,切なさ:20,悲しみ:0,甘え:30},{addressName:"リルコ"});r.push({n:"コメント:僕/宛名",p:/僕/.test(c3)&&/リルコ/.test(c3),d:c3});return r}
+function renderTests(){const t=runTests(),root=$("#tests");root.innerHTML="";t.forEach(v=>{const d=document.createElement("div");d.className="card "+(v.p?"test-pass":"test-fail");d.style.padding="8px";d.style.borderRadius="10px";d.style.marginBottom="6px";d.innerHTML=`<div><strong>${v.n}</strong></div><div class="muted">${v.d}</div>`;root.appendChild(d)})}
+function bootstrap(){ $("#text").value=state.text; $("#realtime").checked=state.realtime; $("#sensitivity").value=state.sensitivity; $("#sensv").textContent="×"+state.sensitivity.toFixed(1); renderLexPanel(); analyze();
+$("#text").addEventListener("input",e=>{ if($("#realtime").checked){ state.text=e.target.value; analyze(); }});
+$("#analyze").addEventListener("click",()=>{ state.text=$("#text").value; analyze(); });
+$("#sensitivity").addEventListener("input",e=>{ state.sensitivity=parseFloat(e.target.value); $("#sensv").textContent="×"+state.sensitivity.toFixed(1); if($("#realtime").checked) analyze(); });
+$("#copyJson").addEventListener("click",()=>{ navigator.clipboard?.writeText($("#json").textContent); });
+$("#addCat").addEventListener("click",()=>{ const n=($("#newCat").value||"").trim(); if(!n||state.lexicon[n]) return; state.lexicon[n]=[]; $("#newCat").value=""; renderLexPanel(); analyze(); });
+$("#runTests").addEventListener("click",renderTests);
+$("#addr").addEventListener("input",analyze); $("#tone").addEventListener("change",analyze); $("#length").addEventListener("change",analyze);
+renderTests(); }
+window.addEventListener("DOMContentLoaded",bootstrap);
+</script></html>
